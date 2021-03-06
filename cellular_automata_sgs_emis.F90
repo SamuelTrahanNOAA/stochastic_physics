@@ -4,7 +4,7 @@ module cellular_automata_sgs_emis_mod
 
 contains
 
-  subroutine cellular_automata_sgs_emis(kstep,ugrs,qgrs,pgr,vvl,prsl,condition_cpl, &
+  subroutine cellular_automata_sgs_emis(kstep,ugrs,qgrs,pgr,vvl,prsl,vfrac_cpl, &
        ca_emis_anthro_cpl,ca_emis_dust_cpl,ca_emis_plume_cpl,ca_emis_seas_cpl, &
        ca_condition_diag, ca_plume_diag, domain_for_coupler, &
        nblks,isc,iec,jsc,jec,npx,npy,nlev, &
@@ -47,7 +47,7 @@ contains
     real(kind=kind_phys), intent(in)    :: pgr(:,:)
     real(kind=kind_phys), intent(in)    :: vvl(:,:,:)
     real(kind=kind_phys), intent(in)    :: prsl(:,:,:)
-    real(kind=kind_phys), intent(inout) :: condition_cpl(:,:)
+    real(kind=kind_phys), intent(inout) :: vfrac_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_anthro_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_dust_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_plume_cpl(:,:)
@@ -74,7 +74,7 @@ contains
     real(kind=kind_phys), allocatable :: CA_EMIS_PLUME(:,:),CA_EMIS_SEAS(:,:)
     real(kind=kind_phys), allocatable :: noise1D(:),vertvelhigh(:,:),noise(:,:,:)
     real(kind=kind_phys) :: psum,csum,CAmean,sq_diff,CAstdv,count1,lambda
-    real(kind=kind_phys) :: Detmax(nca),Detmin(nca),Detmean(nca),phi,stdev,delt,condmax
+    real(kind=kind_phys) :: Detmax(nca),Detmin(nca),Detmean(nca),phi,stdev,delt,condmax,test
     logical,save         :: block_message=.true.
     logical              :: nca_plumes
 
@@ -93,8 +93,9 @@ contains
     ! Initialize MPI and OpenMP
     if (kstep==0) then
       call mpi_wrapper_initialize(mpiroot,mpicomm)
+      return ! fields are not available yet.
     end if
-
+    
     halo=1
     k_in=1
 
@@ -109,7 +110,6 @@ contains
       k850=int(nlev/5)
       print*,'this level selection is not supported, making an approximation for k350 and k850'
     endif
-
     nca_plumes = .true.
     !----------------------------------------------------------------------------
     ! Get information about the compute domain, allocate fields on this
@@ -136,7 +136,6 @@ contains
     nych=nyc+2*halo
 
     !Allocate fields:
-
     allocate(cloud(nlon,nlat))
     allocate(omega(nlon,nlat,nlev))
     allocate(pressure(nlon,nlat,nlev))
@@ -196,13 +195,12 @@ contains
 
     call define_blocks_packed('cellular_automata', Atm_block, isc, iec, jsc, jec, levs, &
          blocksz, block_message)
-
     do blk = 1,Atm_block%nblks
       do ix = 1, Atm_block%blksz(blk)
         i = Atm_block%index(blk)%ii(ix) - isc + 1
         j = Atm_block%index(blk)%jj(ix) - jsc + 1
         uwind(i,j)         = ugrs(blk,ix,k350)
-        conditiongrid(i,j) = condition_cpl(blk,ix)
+        conditiongrid(i,j) = nint(vfrac_cpl(blk,ix))
         surfp(i,j)         = pgr(blk,ix)
         humidity(i,j)      = qgrs(blk,ix,k850) !about 850 hpa
         do k = 1,k350 !Lower troposphere
@@ -220,6 +218,7 @@ contains
     !Compute layer averaged vertical velocity (Pa/s)
     vertvelsum=0.
     vertvelmean=0.
+
     do j=1,nlat
       do i =1,nlon
         dp(i,j,1)=(surfp(i,j)-pressure(i,j,1))
@@ -233,7 +232,6 @@ contains
         enddo
       enddo
     enddo
-
     do j=1,nlat
       do i=1,nlon
         vertvelmean(i,j)=vertvelsum(i,j)/(surfp(i,j)-pressure(i,j,k350))
@@ -259,13 +257,13 @@ contains
 
     do nf=1,nca
       call random_number(noise1D)
+
       !Put on 2D:
       do j=1,nyc
         do i=1,nxc
           noise(i,j,nf)=noise1D(i+(j-1)*nxc)
         enddo
       enddo
-
 
       !Initiate the cellular automaton with random numbers larger than nfracseed
 
@@ -308,11 +306,13 @@ contains
         condmax=maxval(condition)
         call mp_reduce_max(condmax)
 
-        do j = 1,nyc
-          do i = 1,nxc
-            ilives(i,j,nf)=real(nlives)*(condition(i,j)/condmax)
+        if(condmax>0) then
+          do j = 1,nyc
+            do i = 1,nxc
+              ilives(i,j,nf)=real(nlives)*(condition(i,j)/condmax)
+            enddo
           enddo
-        enddo
+        endif
       endif !nf
 
 
@@ -399,7 +399,6 @@ contains
       enddo
     enddo
 
-
     deallocate(omega)
     deallocate(pressure)
     deallocate(humidity)
@@ -429,51 +428,83 @@ contains
 
   contains
     subroutine min_max_normalize(CA_EMIS)
+      use mpi, only: MPI_Abort, MPI_COMM_WORLD
+      implicit none
+      integer :: ierr
       real(kind=kind_phys), intent(inout) :: CA_EMIS(:,:)
+      logical :: found_max, found_min
 
       !Use min-max method to normalize range
-      Detmax(1)=maxval(CA_EMIS,CA_EMIS.NE.0.)
+      found_max=.false.
+      found_min=.false.
+      detmax(1)=0
+      detmin(1)=0
+      do j=1,nlat
+        do i=1,nlon
+          if(.not.(ca_emis(i,j)==ca_emis(i,j)) .or. (ca_emis(i,j)+1<=ca_emis(i,j))) then
+            ! nan or infinity
+            ca_emis(i,j)=0
+          elseif(ca_emis(i,j)==0) then
+            ! ignore zeroes
+          else
+            if(.not.found_max .or. ca_emis(i,j)>detmax(1)) then
+              detmax(1)=ca_emis(i,j)
+              found_max=.true.
+            endif
+            if(.not.found_min .or. ca_emis(i,j)<detmin(1)) then
+              detmin(1)=ca_emis(i,j)
+              found_min=.true.
+            endif
+          endif
+        enddo
+      enddo
       call mp_reduce_max(Detmax(1))
-      Detmin(1)=minval(CA_EMIS,CA_EMIS.NE.0.)
       call mp_reduce_min(Detmin(1))
 
-
-      do j=1,nlat
-        do i=1,nlon
-          if(CA_EMIS(i,j).NE.0.)then
-            CA_EMIS(i,j) =(CA_EMIS(i,j) - Detmin(1))/(Detmax(1)-Detmin(1))
-          endif
+      if(Detmax(1)/=Detmin(1)) then
+        do j=1,nlat
+          do i=1,nlon
+            if(CA_EMIS(i,j).NE.0.)then
+              CA_EMIS(i,j) =(CA_EMIS(i,j) - Detmin(1))/(Detmax(1)-Detmin(1))
+            endif
+          enddo
         enddo
-      enddo
 
-      !Compute the mean of the new range and subtract
-      CAmean=0.
-      psum=0.
-      csum=0.
-      do j=1,nlat
-        do i=1,nlon
-          if(CA_EMIS(i,j).NE.0.)then
-            psum=psum+(CA_EMIS(i,j))
-            csum=csum+1
-          endif
+        !Compute the mean of the new range and subtract
+        CAmean=0.
+        psum=0.
+        csum=0.
+        do j=1,nlat
+          do i=1,nlon
+            if(CA_EMIS(i,j).NE.0.)then
+              psum=psum+(CA_EMIS(i,j))
+              csum=csum+1
+            endif
+          enddo
         enddo
-      enddo
 
-      call mp_reduce_sum(psum)
-      call mp_reduce_sum(csum)
+        call mp_reduce_sum(psum)
+        call mp_reduce_sum(csum)
 
-      CAmean=psum/csum
+        if(csum>0) then
+          CAmean=psum/csum
+          do j=1,nlat
+            do i=1,nlon
+              if(CA_EMIS(i,j).NE.0.)then
+                CA_EMIS(i,j)=(CA_EMIS(i,j)-CAmean)
+              endif
+            enddo
+          enddo
+        endif
+      endif
 
-      do j=1,nlat
-        do i=1,nlon
-          if(CA_EMIS(i,j).NE.0.)then
-            CA_EMIS(i,j)=(CA_EMIS(i,j)-CAmean)
-          endif
-        enddo
-      enddo
-
-      Detmin(1) = minval(CA_EMIS,CA_EMIS.NE.0)
-      call mp_reduce_min(Detmin(1))
+      
+      ! if(any(ca_emis/=0)) then
+      !   Detmin(1) = minval(CA_EMIS,CA_EMIS.NE.0)
+      !   call mp_reduce_min(Detmin(1))
+      ! else
+      !   Detmin(1)=0
+      ! endif
     end subroutine min_max_normalize
 
   end subroutine cellular_automata_sgs_emis
