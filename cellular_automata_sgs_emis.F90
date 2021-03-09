@@ -342,28 +342,19 @@ contains
            nlives,ncells,nfracseed,nseed,nthresh,nspinup,nf,nca_plumes)
 
       if(nf==1)then
-        CA_EMIS_ANTHRO(:,:)=CA(:,:)
+        CA_EMIS_ANTHRO(:,:)=CA(:,:)/nlives
       elseif(nf==2)then
-        CA_EMIS_DUST(:,:)=CA(:,:)
+        CA_EMIS_DUST(:,:)=CA(:,:)/nlives
       elseif(nf==3) then
-        CA_EMIS_PLUME(:,:)=CA(:,:)
+        CA_EMIS_PLUME(:,:)=CA(:,:)/nlives
       else
-        CA_EMIS_SEAS(:,:)=CA(:,:)
+        CA_EMIS_SEAS(:,:)=CA(:,:)/nlives
       endif
 
 
     enddo !nf (nca)
 
     !!Post-processesing - could be made into a separate sub-routine
-
-    !Deep convection ====================================
-
-    ! if(kstep > 1)then
-    !   call min_max_normalize(CA_EMIS_ANTHRO)
-    !   call min_max_normalize(CA_EMIS_DUST)
-    !   call min_max_normalize(CA_EMIS_PLUME)
-    !   call min_max_normalize(CA_EMIS_SEAS)
-    ! endif !kstep >1
 
     if(kstep == 1)then
       do j=1,nlat
@@ -425,88 +416,6 @@ contains
     deallocate(CA_EMIS_SEAS)
     deallocate(noise)
     deallocate(noise1D)
-
-  contains
-    subroutine min_max_normalize(CA_EMIS)
-      use mpi, only: MPI_Abort, MPI_COMM_WORLD
-      implicit none
-      integer :: ierr
-      real(kind=kind_phys), intent(inout) :: CA_EMIS(:,:)
-      logical :: found_max, found_min
-
-      !Use min-max method to normalize range
-      found_max=.false.
-      found_min=.false.
-      detmax(1)=0
-      detmin(1)=0
-      do j=1,nlat
-        do i=1,nlon
-          if(.not.(ca_emis(i,j)==ca_emis(i,j)) .or. (ca_emis(i,j)+1<=ca_emis(i,j))) then
-            ! nan or infinity
-            ca_emis(i,j)=0
-          elseif(ca_emis(i,j)==0) then
-            ! ignore zeroes
-          else
-            if(.not.found_max .or. ca_emis(i,j)>detmax(1)) then
-              detmax(1)=ca_emis(i,j)
-              found_max=.true.
-            endif
-            if(.not.found_min .or. ca_emis(i,j)<detmin(1)) then
-              detmin(1)=ca_emis(i,j)
-              found_min=.true.
-            endif
-          endif
-        enddo
-      enddo
-      call mp_reduce_max(Detmax(1))
-      call mp_reduce_min(Detmin(1))
-
-      if(Detmax(1)/=Detmin(1)) then
-        do j=1,nlat
-          do i=1,nlon
-            if(CA_EMIS(i,j).NE.0.)then
-              CA_EMIS(i,j) =(CA_EMIS(i,j) - Detmin(1))/(Detmax(1)-Detmin(1))
-            endif
-          enddo
-        enddo
-
-        ! !Compute the mean of the new range and subtract
-        ! CAmean=0.
-        ! psum=0.
-        ! csum=0.
-        ! do j=1,nlat
-        !   do i=1,nlon
-        !     if(CA_EMIS(i,j).NE.0.)then
-        !       psum=psum+(CA_EMIS(i,j))
-        !       csum=csum+1
-        !     endif
-        !   enddo
-        ! enddo
-
-        ! call mp_reduce_sum(psum)
-        ! call mp_reduce_sum(csum)
-
-        ! if(csum>0) then
-        !   CAmean=psum/csum
-        !   do j=1,nlat
-        !     do i=1,nlon
-        !       if(CA_EMIS(i,j).NE.0.)then
-        !         CA_EMIS(i,j)=(CA_EMIS(i,j)-CAmean)
-        !       endif
-        !     enddo
-        !   enddo
-        ! endif
-      endif
-
-      
-      ! if(any(ca_emis/=0)) then
-      !   Detmin(1) = minval(CA_EMIS,CA_EMIS.NE.0)
-      !   call mp_reduce_min(Detmin(1))
-      ! else
-      !   Detmin(1)=0
-      ! endif
-    end subroutine min_max_normalize
-
   end subroutine cellular_automata_sgs_emis
 
 end module cellular_automata_sgs_emis_mod
