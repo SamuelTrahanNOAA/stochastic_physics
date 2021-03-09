@@ -200,7 +200,7 @@ contains
         i = Atm_block%index(blk)%ii(ix) - isc + 1
         j = Atm_block%index(blk)%jj(ix) - jsc + 1
         uwind(i,j)         = ugrs(blk,ix,k350)
-        conditiongrid(i,j) = nint(vfrac_cpl(blk,ix))
+        conditiongrid(i,j) = max(0.0,vfrac_cpl(blk,ix))
         surfp(i,j)         = pgr(blk,ix)
         humidity(i,j)      = qgrs(blk,ix,k850) !about 850 hpa
         do k = 1,k350 !Lower troposphere
@@ -358,12 +358,12 @@ contains
 
     !Deep convection ====================================
 
-    if(kstep > 1)then
-      call min_max_normalize(CA_EMIS_ANTHRO)
-      call min_max_normalize(CA_EMIS_DUST)
-      call min_max_normalize(CA_EMIS_PLUME)
-      call min_max_normalize(CA_EMIS_SEAS)
-    endif !kstep >1
+    ! if(kstep > 1)then
+    !   call min_max_normalize(CA_EMIS_ANTHRO)
+    !   call min_max_normalize(CA_EMIS_DUST)
+    !   call min_max_normalize(CA_EMIS_PLUME)
+    !   call min_max_normalize(CA_EMIS_SEAS)
+    ! endif !kstep >1
 
     if(kstep == 1)then
       do j=1,nlat
@@ -470,32 +470,32 @@ contains
           enddo
         enddo
 
-        !Compute the mean of the new range and subtract
-        CAmean=0.
-        psum=0.
-        csum=0.
-        do j=1,nlat
-          do i=1,nlon
-            if(CA_EMIS(i,j).NE.0.)then
-              psum=psum+(CA_EMIS(i,j))
-              csum=csum+1
-            endif
-          enddo
-        enddo
+        ! !Compute the mean of the new range and subtract
+        ! CAmean=0.
+        ! psum=0.
+        ! csum=0.
+        ! do j=1,nlat
+        !   do i=1,nlon
+        !     if(CA_EMIS(i,j).NE.0.)then
+        !       psum=psum+(CA_EMIS(i,j))
+        !       csum=csum+1
+        !     endif
+        !   enddo
+        ! enddo
 
-        call mp_reduce_sum(psum)
-        call mp_reduce_sum(csum)
+        ! call mp_reduce_sum(psum)
+        ! call mp_reduce_sum(csum)
 
-        if(csum>0) then
-          CAmean=psum/csum
-          do j=1,nlat
-            do i=1,nlon
-              if(CA_EMIS(i,j).NE.0.)then
-                CA_EMIS(i,j)=(CA_EMIS(i,j)-CAmean)
-              endif
-            enddo
-          enddo
-        endif
+        ! if(csum>0) then
+        !   CAmean=psum/csum
+        !   do j=1,nlat
+        !     do i=1,nlon
+        !       if(CA_EMIS(i,j).NE.0.)then
+        !         CA_EMIS(i,j)=(CA_EMIS(i,j)-CAmean)
+        !       endif
+        !     enddo
+        !   enddo
+        ! endif
       endif
 
       
