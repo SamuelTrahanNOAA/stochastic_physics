@@ -6,18 +6,19 @@ contains
 
   subroutine cellular_automata_sgs_emis(kstep,ugrs,qgrs,pgr,vvl,prsl,vfrac_cpl, &
        ca_emis_anthro_cpl,ca_emis_dust_cpl,ca_emis_plume_cpl,ca_emis_seas_cpl, &
-       ca_condition_diag, ca_plume_diag, domain_for_coupler, &
+       ca_condition_diag, ca_plume_diag, ca_sgs_gbbepx_frp, domain_for_coupler, &
        nblks,isc,iec,jsc,jec,npx,npy,nlev, &
        nca,ncells,nlives,nfracseed,nseed,nthresh,ca_global,ca_sgs,iseed_ca, &
        ca_smooth,nspinup,blocksize,mpiroot, mpicomm)
 
     use kinddef,           only: kind_phys
+    use halo_exchange,     only: atmosphere_scalar_field_halo
     use update_ca,         only: update_cells_sgs, update_cells_global
     use mersenne_twister,  only: random_setseed,random_gauss,random_stat,random_number
     use mpp_domains_mod,   only: domain2D
     use block_control_mod, only: block_control_type, define_blocks_packed
     use mpi_wrapper,       only: mype,mp_reduce_sum,mp_bcst,mp_reduce_max,mp_reduce_min, &
-         mpi_wrapper_initialize
+         mpi_wrapper_initialize,is_master
 
 
     implicit none
@@ -49,6 +50,7 @@ contains
     real(kind=kind_phys), intent(in)    :: prsl(:,:,:)
     real(kind=kind_phys), intent(inout) :: vfrac_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_anthro_cpl(:,:)
+    real(kind=kind_phys), intent(inout) :: ca_sgs_gbbepx_frp(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_dust_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_plume_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_seas_cpl(:,:)
@@ -73,7 +75,7 @@ contains
     real(kind=kind_phys), allocatable :: CA_EMIS_ANTHRO(:,:),CA_EMIS_DUST(:,:)
     real(kind=kind_phys), allocatable :: CA_EMIS_PLUME(:,:),CA_EMIS_SEAS(:,:)
     real(kind=kind_phys), allocatable :: noise1D(:),vertvelhigh(:,:),noise(:,:,:)
-    real(kind=kind_phys) :: psum,csum,CAmean,sq_diff,CAstdv,count1,lambda
+    real(kind=kind_phys) :: psum,csum,CAmean,sq_diff,CAstdv,count1,lambda,maxtest,mintest
     real(kind=kind_phys) :: Detmax(nca),Detmin(nca),Detmean(nca),phi,stdev,delt,condmax,test
     logical,save         :: block_message=.true.
     logical              :: nca_plumes
@@ -188,6 +190,10 @@ contains
     Detmax(:)=0.
     Detmin(:)=0.
 
+    field_in=0
+    field_out=0
+    field_smooth=0
+
     !Put the blocks of model fields into a 2d array - can't use nlev and blocksize directly,
     !because the arguments to define_blocks_packed are intent(inout) and not intent(in).
     levs=nlev
@@ -207,6 +213,28 @@ contains
           omega(i,j,k)       = vvl(blk,ix,k) ! layer mean vertical velocity in pa/sec
           pressure(i,j,k)    = prsl(blk,ix,k) ! layer mean pressure in Pa
         enddo
+        field_in(i+(j-1)*nlon,1)=ca_sgs_gbbepx_frp(blk,ix)
+      enddo
+    enddo
+
+    field_out=0.
+    
+    call atmosphere_scalar_field_halo(field_out,halo,isize,jsize,k_in,field_in,isc,iec,jsc,jec,npx,npy,domain_for_coupler)
+    
+    do j=1,nlat
+      do i=1,nlon
+        ih=i+halo
+        jh=j+halo
+        field_smooth(i,j)=(2.0*field_out(ih,jh,1)+2.0*field_out(ih-1,jh,1)+ &
+             2.0*field_out(ih,jh-1,1)+2.0*field_out(ih+1,jh,1)+&
+             2.0*field_out(ih,jh+1,1)+2.0*field_out(ih-1,jh-1,1)+&
+             2.0*field_out(ih-1,jh+1,1)+2.0*field_out(ih+1,jh+1,1)+&
+             2.0*field_out(ih+1,jh-1,1))/18.
+        if(field_smooth(i,j)>1.0) then
+          conditiongrid(i,j) = conditiongrid(i,j)*field_smooth(i,j)
+        else
+          conditiongrid(i,j) = 0
+        endif
       enddo
     enddo
 
@@ -383,10 +411,10 @@ contains
         ca_condition_diag(blk,ix)=conditiongrid(i,j)
         ca_plume_diag(blk,ix)=ca_plumes(i,j)
 
-        ca_emis_anthro_cpl(blk,ix)=CA_EMIS_ANTHRO(i,j)
-        ca_emis_dust_cpl(blk,ix)=CA_EMIS_DUST(i,j)
-        ca_emis_plume_cpl(blk,ix)=CA_EMIS_PLUME(i,j)
-        ca_emis_seas_cpl(blk,ix)=CA_EMIS_SEAS(i,j)
+        ca_emis_anthro_cpl(blk,ix)=CA_EMIS_ANTHRO(i,j)/max(1.0,vfrac_cpl(blk,ix))
+        ca_emis_dust_cpl(blk,ix)=CA_EMIS_DUST(i,j)/max(1.0,vfrac_cpl(blk,ix))
+        ca_emis_plume_cpl(blk,ix)=CA_EMIS_PLUME(i,j)/max(1.0,vfrac_cpl(blk,ix))
+        ca_emis_seas_cpl(blk,ix)=CA_EMIS_SEAS(i,j)/max(1.0,vfrac_cpl(blk,ix))
       enddo
     enddo
 
