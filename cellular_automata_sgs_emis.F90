@@ -4,10 +4,10 @@ module cellular_automata_sgs_emis_mod
 
 contains
 
-  subroutine cellular_automata_sgs_emis(kstep,ugrs,qgrs,pgr,vvl,prsl,vfrac_cpl, &
+  subroutine cellular_automata_sgs_emis(kstep,ugrs,vgrs,qgrs,pgr,vvl,prsl,vfrac_cpl, &
        ca_emis_anthro_cpl,ca_emis_dust_cpl,ca_emis_plume_cpl,ca_emis_seas_cpl, &
        ca_condition_diag, ca_plume_diag, ca_sgs_gbbepx_frp, domain_for_coupler, &
-       nblks,isc,iec,jsc,jec,npx,npy,nlev, &
+       nblks,isc,iec,jsc,jec,npx,npy,nlev,fhour,vegtype_cpl,iopt_dveg, &
        nca,ncells,nlives,nfracseed,nseed,nthresh,ca_global,ca_sgs,iseed_ca, &
        ca_smooth,nspinup,blocksize,mpiroot, mpicomm)
 
@@ -39,16 +39,18 @@ contains
     !PLEASE NOTE: This is considered to be version 0 of the cellular automata code for FV3GFS, some functionally
     !is missing/limited.
 
-    integer,intent(in) :: kstep,ncells,nca,nlives,nseed,iseed_ca,nspinup,mpiroot,mpicomm
-    real(kind=kind_phys), intent(in)    :: nfracseed,nthresh
+    integer,intent(in) :: kstep,ncells,nca,nlives,nseed,iseed_ca,nspinup,mpiroot,mpicomm,iopt_dveg
+    real(kind=kind_phys), intent(in)    :: nfracseed,nthresh,fhour
     logical,intent(in) :: ca_global, ca_sgs, ca_smooth
     integer, intent(in) :: nblks,isc,iec,jsc,jec,npx,npy,nlev,blocksize
     real(kind=kind_phys), intent(in)    :: ugrs(:,:,:)
+    real(kind=kind_phys), intent(in)    :: vgrs(:,:,:)
     real(kind=kind_phys), intent(in)    :: qgrs(:,:,:)
     real(kind=kind_phys), intent(in)    :: pgr(:,:)
     real(kind=kind_phys), intent(in)    :: vvl(:,:,:)
     real(kind=kind_phys), intent(in)    :: prsl(:,:,:)
     real(kind=kind_phys), intent(inout) :: vfrac_cpl(:,:)
+    integer, intent(in) :: vegtype_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_anthro_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_sgs_gbbepx_frp(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_dust_cpl(:,:)
@@ -67,18 +69,19 @@ contains
     integer :: blocksz,levs,k350,k850
     integer(8) :: count, count_rate, count_max, count_trunc
     integer(8) :: iscale = 10000000000
-    integer, allocatable :: iini(:,:,:),ilives(:,:,:),iini_g(:,:,:),ilives_g(:,:),ca_plumes(:,:)
+    integer, allocatable :: iini(:,:,:),ilives(:,:,:),iini_g(:,:,:),ilives_g(:,:),ca_plumes(:,:), vegtype(:,:)
     real(kind=kind_phys), allocatable :: field_out(:,:,:), field_in(:,:),field_smooth(:,:),Detfield(:,:,:)
-    real(kind=kind_phys), allocatable :: omega(:,:,:),pressure(:,:,:),cloud(:,:),humidity(:,:),uwind(:,:)
+    real(kind=kind_phys), allocatable :: omega(:,:,:),pressure(:,:,:),cloud(:,:),humidity(:,:),uwind(:,:),vwind(:,:)
     real(kind=kind_phys), allocatable :: vertvelsum(:,:),vertvelmean(:,:),dp(:,:,:),surfp(:,:),shalp(:,:),gamt(:,:)
     real(kind=kind_phys), allocatable :: CA(:,:),condition(:,:),rho(:,:),conditiongrid(:,:)
     real(kind=kind_phys), allocatable :: CA_EMIS_ANTHRO(:,:),CA_EMIS_DUST(:,:)
     real(kind=kind_phys), allocatable :: CA_EMIS_PLUME(:,:),CA_EMIS_SEAS(:,:)
     real(kind=kind_phys), allocatable :: noise1D(:),vertvelhigh(:,:),noise(:,:,:)
-    real(kind=kind_phys) :: psum,csum,CAmean,sq_diff,CAstdv,count1,lambda,maxtest,mintest
-    real(kind=kind_phys) :: Detmax(nca),Detmin(nca),Detmean(nca),phi,stdev,delt,condmax,test
+    real(kind=kind_phys) :: psum,csum,CAmean,sq_diff,CAstdv,count1,lambda
+    real(kind=kind_phys) :: Detmax(nca),Detmin(nca),Detmean(nca),phi,stdev,delt
     logical,save         :: block_message=.true.
     logical              :: nca_plumes
+    real(kind=kind_phys) :: init_weight
 
     !nca         :: switch for number of cellular automata to be used.
     !ca_global   :: switch for global cellular automata
@@ -138,11 +141,13 @@ contains
     nych=nyc+2*halo
 
     !Allocate fields:
+    allocate(vegtype(nlon,nlat))
     allocate(cloud(nlon,nlat))
     allocate(omega(nlon,nlat,nlev))
     allocate(pressure(nlon,nlat,nlev))
     allocate(humidity(nlon,nlat))
     allocate(uwind(nlon,nlat))
+    allocate(vwind(nlon,nlat))
     allocate(dp(nlon,nlat,nlev))
     allocate(rho(nlon,nlat))
     allocate(surfp(nlon,nlat))
@@ -206,42 +211,36 @@ contains
         i = Atm_block%index(blk)%ii(ix) - isc + 1
         j = Atm_block%index(blk)%jj(ix) - jsc + 1
         uwind(i,j)         = ugrs(blk,ix,k350)
+        vwind(i,j)         = vgrs(blk,ix,k350)
         conditiongrid(i,j) = max(0.0,vfrac_cpl(blk,ix))
+        vegtype(i,j)       = vegtype_cpl(blk,ix)
         surfp(i,j)         = pgr(blk,ix)
         humidity(i,j)      = qgrs(blk,ix,k850) !about 850 hpa
         do k = 1,k350 !Lower troposphere
           omega(i,j,k)       = vvl(blk,ix,k) ! layer mean vertical velocity in pa/sec
           pressure(i,j,k)    = prsl(blk,ix,k) ! layer mean pressure in Pa
         enddo
-        field_in(i+(j-1)*nlon,1)=ca_sgs_gbbepx_frp(blk,ix)
+      enddo
+    enddo
+
+
+    do blk = 1, Atm_block%nblks
+      do ix = 1,Atm_block%blksz(blk)
+        i = Atm_block%index(blk)%ii(ix) - isc + 1
+        j = Atm_block%index(blk)%jj(ix) - jsc + 1
+        CA_EMIS_ANTHRO(i,j)=ca_emis_anthro_cpl(blk,ix)*vfrac_cpl(blk,ix)
+        CA_EMIS_DUST(i,j)=ca_emis_dust_cpl(blk,ix)*vfrac_cpl(blk,ix)
+        CA_EMIS_PLUME(i,j)=ca_emis_plume_cpl(blk,ix)*vfrac_cpl(blk,ix)
+        CA_EMIS_SEAS(i,j)=ca_emis_seas_cpl(blk,ix)*vfrac_cpl(blk,ix)
       enddo
     enddo
 
     field_out=0.
     
-    call atmosphere_scalar_field_halo(field_out,halo,isize,jsize,k_in,field_in,isc,iec,jsc,jec,npx,npy,domain_for_coupler)
-    
-    do j=1,nlat
-      do i=1,nlon
-        ih=i+halo
-        jh=j+halo
-        field_smooth(i,j)=(2.0*field_out(ih,jh,1)+2.0*field_out(ih-1,jh,1)+ &
-             2.0*field_out(ih,jh-1,1)+2.0*field_out(ih+1,jh,1)+&
-             2.0*field_out(ih,jh+1,1)+2.0*field_out(ih-1,jh-1,1)+&
-             2.0*field_out(ih-1,jh+1,1)+2.0*field_out(ih+1,jh+1,1)+&
-             2.0*field_out(ih+1,jh-1,1))/18.
-        if(field_smooth(i,j)>1.0) then
-          conditiongrid(i,j) = conditiongrid(i,j)*field_smooth(i,j)
-        else
-          conditiongrid(i,j) = 0
-        endif
-      enddo
-    enddo
-
-    CA_EMIS_ANTHRO(:,:) = 0.0
-    CA_EMIS_DUST(:,:) = 0.0
-    CA_EMIS_PLUME(:,:) = 0.0
-    CA_EMIS_SEAS(:,:) = 0.0
+!    CA_EMIS_ANTHRO(:,:) = 0.0
+!    CA_EMIS_DUST(:,:) = 0.0
+!    CA_EMIS_PLUME(:,:) = 0.0
+!    CA_EMIS_SEAS(:,:) = 0.0
 
     !Compute layer averaged vertical velocity (Pa/s)
     vertvelsum=0.
@@ -314,53 +313,16 @@ contains
 
 
     do nf=1,nca !update each ca
-
-      if(nf>=1 .and. nf<=4)then
-        inci=ncells
-        incj=ncells
-        do j=1,nyc
-          do i=1,nxc
-            condition(i,j)=conditiongrid(inci/ncells,incj/ncells)
-            if(i.eq.inci)then
-              inci=inci+ncells
-            endif
-          enddo
-          inci=ncells
-          if(j.eq.incj)then
-            incj=incj+ncells
-          endif
-        enddo
-
-        condmax=maxval(condition)
-        call mp_reduce_max(condmax)
-
-        if(condmax>0) then
-          do j = 1,nyc
-            do i = 1,nxc
-              ilives(i,j,nf)=real(nlives)*(condition(i,j)/condmax)
-            enddo
-          enddo
-        endif
-      endif !nf
-
-
-      !Vertical velocity has its own variable in order to condition on combination
-      !of "condition" and vertical velocity.
-
-      inci=ncells
-      incj=ncells
-      do j=1,nyc
-        do i=1,nxc
-          vertvelhigh(i,j)=vertvelmean(inci/ncells,incj/ncells)
-          if(i.eq.inci)then
-            inci=inci+ncells
-          endif
-        enddo
-        inci=ncells
-        if(j.eq.incj)then
-          incj=incj+ncells
-        endif
-      enddo
+      
+      if(nf==1)then
+        call set_condition(ca_emis_plume_cpl,.true.)
+      elseif(nf==2)then
+        call set_condition(ca_emis_dust_cpl,.false.)
+      elseif(nf==3) then
+        call set_condition(ca_emis_anthro_cpl,.false.)
+      else
+        call set_condition(ca_emis_seas_cpl,.false.)
+      endif
 
       !Calculate neighbours and update the automata
       !If ca-global is used, then nca independent CAs are called and weighted together to create one field; CA
@@ -370,16 +332,15 @@ contains
            nlives,ncells,nfracseed,nseed,nthresh,nspinup,nf,nca_plumes)
 
       if(nf==1)then
-        CA_EMIS_ANTHRO(:,:)=CA(:,:)/nlives
+        CA_EMIS_PLUME(:,:)=CA(:,:)/nlives
       elseif(nf==2)then
         CA_EMIS_DUST(:,:)=CA(:,:)/nlives
       elseif(nf==3) then
-        CA_EMIS_PLUME(:,:)=CA(:,:)/nlives
+        CA_EMIS_ANTHRO(:,:)=CA(:,:)/nlives
       else
         CA_EMIS_SEAS(:,:)=CA(:,:)/nlives
       endif
-
-
+      
     enddo !nf (nca)
 
     !!Post-processesing - could be made into a separate sub-routine
@@ -411,12 +372,17 @@ contains
         ca_condition_diag(blk,ix)=conditiongrid(i,j)
         ca_plume_diag(blk,ix)=ca_plumes(i,j)
 
-        ca_emis_anthro_cpl(blk,ix)=CA_EMIS_ANTHRO(i,j)/max(1.0,vfrac_cpl(blk,ix))
-        ca_emis_dust_cpl(blk,ix)=CA_EMIS_DUST(i,j)/max(1.0,vfrac_cpl(blk,ix))
-        ca_emis_plume_cpl(blk,ix)=CA_EMIS_PLUME(i,j)/max(1.0,vfrac_cpl(blk,ix))
-        ca_emis_seas_cpl(blk,ix)=CA_EMIS_SEAS(i,j)/max(1.0,vfrac_cpl(blk,ix))
+        ! ca_emis_anthro_cpl(blk,ix)=CA_EMIS_ANTHRO(i,j)/max(1.0,vfrac_cpl(blk,ix))
+        ! ca_emis_dust_cpl(blk,ix)=CA_EMIS_DUST(i,j)/max(1.0,vfrac_cpl(blk,ix))
+        ! ca_emis_plume_cpl(blk,ix)=CA_EMIS_PLUME(i,j)/max(1.0,vfrac_cpl(blk,ix))
+        ! ca_emis_seas_cpl(blk,ix)=CA_EMIS_SEAS(i,j)/max(1.0,vfrac_cpl(blk,ix))
       enddo
     enddo
+
+    call normalize_output(CA_EMIS_ANTHRO,ca_emis_anthro_cpl)
+    call normalize_output(CA_EMIS_DUST,ca_emis_dust_cpl)
+    call normalize_output(CA_EMIS_PLUME,ca_emis_plume_cpl)
+    call normalize_output(CA_EMIS_SEAS,ca_emis_seas_cpl)
 
     deallocate(omega)
     deallocate(pressure)
@@ -444,6 +410,147 @@ contains
     deallocate(CA_EMIS_SEAS)
     deallocate(noise)
     deallocate(noise1D)
+  contains
+
+    subroutine normalize_output(ca_in,ca_out)
+      implicit none
+      real(kind=kind_phys), intent(inout) :: ca_out(:,:)
+      real(kind=kind_phys), intent(in) :: ca_in(:,:)
+      integer :: blk,ix,i,j
+      real(kind=kind_phys) :: minca,maxca,div
+      
+      minca=1e20
+      maxca=-1e20
+      do blk = 1, Atm_block%nblks
+        do ix = 1,Atm_block%blksz(blk)
+          i = Atm_block%index(blk)%ii(ix) - isc + 1
+          j = Atm_block%index(blk)%jj(ix) - jsc + 1
+          ca_out(blk,ix)=ca_in(i,j) ! /max(1.0,vfrac_cpl(blk,ix))
+          minca=min(minca,ca_out(blk,ix))
+          maxca=max(maxca,ca_out(blk,ix))
+        enddo
+      enddo
+
+      call mp_reduce_max(maxca)
+      call mp_reduce_min(minca)
+
+      div=1.0
+      if(minca/=maxca) then
+        div=maxca-minca
+      endif
+      do blk = 1, Atm_block%nblks
+        do ix = 1,Atm_block%blksz(blk)
+          if(ca_out(blk,ix)/=0) then
+            ca_out(blk,ix) = (ca_out(blk,ix)-minca)/div
+          endif
+        enddo
+      enddo
+    end subroutine normalize_output
+    
+    subroutine set_condition(ca_in,save_condition)
+      implicit none
+      real(kind=kind_phys), intent(in) :: ca_in(:,:)
+      integer :: blk,ix,i,j,ih,jh,inci,incj
+      logical, intent(in) :: save_condition
+      real(kind=kind_phys) :: condmax
+      
+      init_weight=max(0.0,min(1.0,fhour))
+      conditiongrid = 0
+
+      ! if(init_weight>0.0) then
+      !   do blk = 1,Atm_block%nblks
+      !     do ix = 1, Atm_block%blksz(blk)
+      !       i = Atm_block%index(blk)%ii(ix) - isc + 1
+      !       j = Atm_block%index(blk)%jj(ix) - jsc + 1
+      !       field_in(i+(j-1)*nlon,1)=ca_sgs_gbbepx_frp(blk,ix)*(1.0-init_weight)
+      !     enddo
+      !   enddo
+      ! else
+      !   field_in=0.0
+      ! endif
+
+      do blk = 1,Atm_block%nblks
+        do ix = 1, Atm_block%blksz(blk)
+          i = Atm_block%index(blk)%ii(ix) - isc + 1
+          j = Atm_block%index(blk)%jj(ix) - jsc + 1
+          field_in(i+(j-1)*nlon,1)=ca_in(blk,ix)
+        enddo
+      enddo
+
+      call atmosphere_scalar_field_halo(field_out,halo,isize,jsize,k_in,field_in,isc,iec,jsc,jec,npx,npy,domain_for_coupler)
+
+      condmax=0
+      do blk = 1,Atm_block%nblks
+        do ix = 1, Atm_block%blksz(blk)
+          i = Atm_block%index(blk)%ii(ix) - isc + 1
+          j = Atm_block%index(blk)%jj(ix) - jsc + 1
+          ih=i+halo
+          jh=j+halo
+          field_smooth(i,j)=(8.0*field_out(ih,jh,1)+4.0*field_out(ih-1,jh,1)+ &
+               4.0*field_out(ih,jh-1,1)+4.0*field_out(ih+1,jh,1)+&
+               4.0*field_out(ih,jh+1,1)+2.0*field_out(ih-1,jh-1,1)+&
+               2.0*field_out(ih-1,jh+1,1)+2.0*field_out(ih+1,jh+1,1)+&
+               2.0*field_out(ih+1,jh-1,1))/32.
+          conditiongrid(i,j) = max(0.0,vfrac_cpl(blk,ix)*(field_smooth(i,j)*init_weight*1000.0 + ca_sgs_gbbepx_frp(blk,ix)*(1.0-init_weight)))
+          condmax = max(condmax,conditiongrid(i,j))
+        enddo
+      enddo
+
+      call mp_reduce_max(condmax)
+
+      if(condmax>0) then
+        do j=1,nlat
+          do i=1,nlon
+            conditiongrid(i,j) = conditiongrid(i,j)/condmax
+          enddo
+        enddo
+      endif
+      
+      if(save_condition) then
+        do blk = 1, Atm_block%nblks
+          do ix = 1,Atm_block%blksz(blk)
+            i = Atm_block%index(blk)%ii(ix) - isc + 1
+            j = Atm_block%index(blk)%jj(ix) - jsc + 1
+
+            ca_condition_diag(blk,ix)=conditiongrid(i,j)
+          enddo
+        enddo
+      endif
+      
+      inci=ncells
+      incj=ncells
+      do j=1,nyc
+        do i=1,nxc
+          ilives(i,j,nf)=real(nlives)*conditiongrid(inci/ncells,incj/ncells)
+          if(i.eq.inci)then
+            inci=inci+ncells
+          endif
+        enddo
+        inci=ncells
+        if(j.eq.incj)then
+          incj=incj+ncells
+        endif
+      enddo
+
+      !Vertical velocity has its own variable in order to condition on combination
+      !of "condition" and vertical velocity.
+
+      inci=ncells
+      incj=ncells
+      do j=1,nyc
+        do i=1,nxc
+          vertvelhigh(i,j)=vertvelmean(inci/ncells,incj/ncells)
+          if(i.eq.inci)then
+            inci=inci+ncells
+          endif
+        enddo
+        inci=ncells
+        if(j.eq.incj)then
+          incj=incj+ncells
+        endif
+      enddo
+    end subroutine set_condition
+
   end subroutine cellular_automata_sgs_emis
 
 end module cellular_automata_sgs_emis_mod
