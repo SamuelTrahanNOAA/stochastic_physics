@@ -16,11 +16,8 @@ list(APPEND _stoch_phys_srcs
   mpi_wrapper.F90
   halo_exchange.fv3.F90
   plumes.f90
-
-  stochy_gg_def.f
-  stochy_resol_def.f
-  stochy_layout_lag.f
   four_to_grid_stochy.F
+  fftpack_stochy.f
   glats_stochy.f
   sumfln_stochy.f
   gozrineo_stochy.f
@@ -35,7 +32,6 @@ list(APPEND _stoch_phys_srcs
   dozeuv_stochy.f
   dezouv_stochy.f
   mersenne_twister.F
-
   spectral_layout.F90
   getcon_spectral.F90
   stochy_namelist_def.F90
@@ -57,8 +53,21 @@ add_dependencies(stochastic_physics fms)
 
 target_compile_definitions(stochastic_physics PRIVATE INTERNAL_FILE_NML)
 
-target_link_libraries(stochastic_physics PUBLIC sp::sp_d)
 target_link_libraries(stochastic_physics PUBLIC fms)
 if(OpenMP_Fortran_FOUND)
-  target_link_libraries(stochastic_physics PUBLIC OpenMP::OpenMP_Fortran)
+  target_link_libraries(stochastic_physics PRIVATE OpenMP::OpenMP_Fortran)
 endif()
+
+###############################################################################
+### Install
+###############################################################################
+install(
+  TARGETS stochastic_physics
+  EXPORT  stochastic_physics-config
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib)
+
+install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod DESTINATION ${CMAKE_INSTALL_PREFIX})
+
+install(EXPORT stochastic_physics-config
+    DESTINATION lib/cmake)
