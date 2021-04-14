@@ -7,7 +7,7 @@ contains
   subroutine cellular_automata_sgs_emis(kstep,ugrs,vgrs,qgrs,pgr,vvl,prsl,vfrac_cpl, &
        ca_emis_anthro_cpl,ca_emis_dust_cpl,ca_emis_plume_cpl,ca_emis_seas_cpl, &
        ca_condition_diag, ca_plume_diag, ca_sgs_gbbepx_frp, domain_for_coupler, &
-       nblks,isc,iec,jsc,jec,npx,npy,nlev,fhour,vegtype_cpl,iopt_dveg, &
+       nblks,isc,iec,jsc,jec,npx,npy,nlev,fhour,vegtype_cpl,iopt_dveg,rain_cpl, &
        nca,ncells,nlives,nfracseed,nseed,nthresh,ca_global,ca_sgs,iseed_ca, &
        ca_smooth,nspinup,blocksize,mpiroot, mpicomm)
 
@@ -51,6 +51,7 @@ contains
     real(kind=kind_phys), intent(in)    :: prsl(:,:,:)
     real(kind=kind_phys), intent(inout) :: vfrac_cpl(:,:)
     integer, intent(in) :: vegtype_cpl(:,:)
+    real(kind=kind_phys), intent(inout) :: rain_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_anthro_cpl(:,:)
     real(kind=kind_phys), intent(inout) :: ca_sgs_gbbepx_frp(:,:)
     real(kind=kind_phys), intent(inout) :: ca_emis_dust_cpl(:,:)
@@ -75,7 +76,7 @@ contains
     real(kind=kind_phys), allocatable :: vertvelsum(:,:),vertvelmean(:,:),dp(:,:,:),surfp(:,:),shalp(:,:),gamt(:,:)
     real(kind=kind_phys), allocatable :: CA(:,:),condition(:,:),rho(:,:),conditiongrid(:,:)
     real(kind=kind_phys), allocatable :: CA_EMIS_ANTHRO(:,:),CA_EMIS_DUST(:,:)
-    real(kind=kind_phys), allocatable :: CA_EMIS_PLUME(:,:),CA_EMIS_SEAS(:,:)
+    real(kind=kind_phys), allocatable :: CA_EMIS_PLUME(:,:),CA_EMIS_SEAS(:,:),rain(:,:)
     real(kind=kind_phys), allocatable :: noise1D(:),vertvelhigh(:,:),noise(:,:,:)
     real(kind=kind_phys) :: psum,csum,CAmean,sq_diff,CAstdv,count1,lambda
     real(kind=kind_phys) :: Detmax(nca),Detmin(nca),Detmean(nca),phi,stdev,delt
@@ -172,6 +173,7 @@ contains
     allocate(CA_EMIS_DUST(nlon,nlat))
     allocate(CA_EMIS_PLUME(nlon,nlat))
     allocate(CA_EMIS_SEAS(nlon,nlat))
+    allocate(rain(nlon,nlat))
     allocate(noise(nxc,nyc,nca))
     allocate(noise1D(nxc*nyc))
 
@@ -210,6 +212,7 @@ contains
       do ix = 1, Atm_block%blksz(blk)
         i = Atm_block%index(blk)%ii(ix) - isc + 1
         j = Atm_block%index(blk)%jj(ix) - jsc + 1
+        rain(i,j)          = rain_cpl(blk,ix)
         uwind(i,j)         = ugrs(blk,ix,k350)
         vwind(i,j)         = vgrs(blk,ix,k350)
         conditiongrid(i,j) = max(0.0,vfrac_cpl(blk,ix))
