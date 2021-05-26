@@ -6,7 +6,7 @@ module mpi_wrapper
 
    public :: mype, npes, root, comm, is_master
    public :: mpi_wrapper_initialize, mpi_wrapper_finalize
-   public :: mp_reduce_min, mp_reduce_max, mp_reduce_sum
+   public :: mp_reduce_min, mp_reduce_max, mp_reduce_sum, mp_reduce_maxloc
    public :: mp_bcst, mp_alltoall
 
 #include "mpif.h"
@@ -48,6 +48,11 @@ module mpi_wrapper
      MODULE PROCEDURE mp_reduce_max_r8_1d
      MODULE PROCEDURE mp_reduce_max_r8
      MODULE PROCEDURE mp_reduce_max_i
+   END INTERFACE
+
+   INTERFACE mp_reduce_maxloc
+     MODULE PROCEDURE mp_reduce_maxloc_r4
+     MODULE PROCEDURE mp_reduce_maxloc_r8
    END INTERFACE
 
    INTERFACE mp_reduce_sum
@@ -328,6 +333,50 @@ contains
 
       end subroutine mp_bcst_4d_i
 !
+! ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ !
+!-------------------------------------------------------------------------------
+
+!-------------------------------------------------------------------------------
+! vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv !
+!
+!     mp_reduce_max_r4 :: Call SPMD REDUCE_MAXLOC
+!
+      subroutine mp_reduce_maxloc_r4(mymax)
+         real(kind=4), intent(INOUT)  :: mymax(2)
+
+         real(kind=4) :: gmax(2)
+
+         gmax = mymax
+
+         call MPI_ALLREDUCE( mymax, gmax, 1, MPI_2REAL, MPI_MAXLOC, &
+                             comm, ierror )
+
+         mymax = gmax
+
+      end subroutine mp_reduce_maxloc_r4
+!     
+! ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ !
+!-------------------------------------------------------------------------------
+
+!-------------------------------------------------------------------------------
+! vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv !
+!
+!     mp_reduce_max_r4 :: Call SPMD REDUCE_MAXLOC
+!
+      subroutine mp_reduce_maxloc_r8(mymax)
+         real(kind=8), intent(INOUT)  :: mymax(2)
+
+         real(kind=8) :: gmax(2)
+
+         gmax = mymax
+
+         call MPI_ALLREDUCE( mymax, gmax, 1, MPI_2DOUBLE_PRECISION, MPI_MAXLOC, &
+                             comm, ierror )
+
+         mymax = gmax
+
+      end subroutine mp_reduce_maxloc_r8
+!     
 ! ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ !
 !-------------------------------------------------------------------------------
 
