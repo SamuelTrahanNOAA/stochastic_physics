@@ -74,7 +74,7 @@ integer :: ncells,nlives
 integer, save :: initialize_ca
 integer(8) :: count, count_rate, count_max, count_trunc
 integer(8) :: iscale = 10000000000
-real(kind=kind_phys), allocatable :: field_out(:,:,:),field_smooth(:,:]
+real(kind=kind_phys), allocatable :: field_out(:,:,:),field_smooth(:,:)
 real(kind=kind_phys), allocatable :: omega(:,:,:),pressure(:,:,:),humidity(:,:),uwind(:,:),vwind(:,:)
 real(kind=kind_phys), allocatable :: vertvelsum(:,:),vertvelmean(:,:),dp(:,:,:),surfp(:,:)
 real(kind=kind_phys), allocatable :: CA_EMIS_ANTHRO(:,:),CA_EMIS_DUST(:,:)
@@ -414,6 +414,7 @@ endif !
  deallocate(noise)
  deallocate(noise1D)
 
+contains
 
     subroutine normalize_output(ca_in,ca_out,save_condition)
       implicit none
