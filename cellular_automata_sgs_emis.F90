@@ -4,8 +4,8 @@ implicit none
 
 contains
 
-subroutine cellular_automata_emis_sgs(kstep,dtf,restart,first_time_step,domain, &
-     ugrs,vgrs,qgrs,pgr,vvl,prsl,vfrac_cpl,fhour,vegtype_cpl,iopt_dveg, &
+subroutine cellular_automata_sgs_emis(kstep,dtf,restart,first_time_step,domain, &
+     ugrs,vgrs,qgrs,pgr,vvl,prsl,vfrac_cpl,fhour,vegtype_cpl, &
      ca_emis_anthro_cpl,ca_emis_dust_cpl,ca_emis_plume_cpl,ca_emis_seas_cpl, &
      ca_condition_diag, ca_plume_diag, ca_sgs_gbbepx_frp, &
      nblks,isc,iec,jsc,jec,npx,npy,nlev,nthresh,rcell, &
@@ -65,7 +65,7 @@ type(random_stat) :: rstate
 integer :: nlon, nlat, isize,jsize,nf,nn
 integer :: inci, incj, nxc, nyc, nxch, nych, nx, ny
 integer :: nxncells, nyncells
-integer :: halo, k_in, i, j, k
+integer :: halo, k_in, i, j, k, k350, k850, count1
 integer :: seed, ierr7,blk, ix, iix, count4,ih,jh
 integer :: blocksz,levs
 integer :: isdnx,iednx,jsdnx,jednx
@@ -82,8 +82,8 @@ real(kind=kind_phys), allocatable :: CA_EMIS_PLUME(:,:),CA_EMIS_SEAS(:,:)
 real(kind=kind_phys), allocatable :: vertvelhigh(:,:),cond_save(:,:)
 integer, allocatable :: iini(:,:,:),ilives_in(:,:,:),ca_plumes(:,:)
 real(kind=kind_phys), allocatable :: CA(:,:),condition(:,:),conditiongrid(:,:)
-real(kind=kind_phys), allocatable :: noise1D(:),noise(:,:,:)
-real(kind=kind_phys) :: condmax,livesmax,factor,dx,pi,re
+real(kind=kind_phys), allocatable :: noise1D(:),noise(:,:,:),vegtype(:,:)
+real(kind=kind_phys) :: condmax,livesmax,factor,dx,pi,re,cond_scale
 type(domain2D)       :: domain_ncellx
 logical,save         :: block_message=.true.
 logical              :: nca_plumes
@@ -169,6 +169,7 @@ endif
 
 
  !Allocate fields:
+ allocate(vegtype(nlon,nlat))
  allocate(field_out(isize,jsize,1))
  allocate(field_smooth(nlon,nlat))
  allocate(omega(nlon,nlat,nlev))
@@ -219,6 +220,18 @@ endif
  call define_blocks_packed('cellular_automata', Atm_block, isc, iec, jsc, jec, levs, &
                               blocksz, block_message)
 
+    if (nlev .EQ. 64) then
+      k350=29
+      k850=13
+    elseif (nlev .EQ. 127) then
+      k350=61
+      k850=28
+    else ! make a guess
+      k350=int(nlev/2)
+      k850=int(nlev/5)
+      print*,'this level selection is not supported, making an approximation for k350 and k850'
+    endif
+
     do blk = 1,Atm_block%nblks
       do ix = 1, Atm_block%blksz(blk)
         i = Atm_block%index(blk)%ii(ix) - isc + 1
@@ -268,29 +281,6 @@ endif
       enddo
     enddo
 
-  condmax=maxval(condition)
-  call mp_reduce_max(condmax)
-  
-if(kstep >=initialize_ca)then
-  do nf=1,nca
-     do j = 1,nyc
-        do i = 1,nxc
-           ilives_in(i,j,nf)=int(real(nlives)*(condition(i,j)/condmax))
-        enddo
-     enddo
-  enddo
-
-else
-
-   do nf=1,nca
-      do j = 1,nyc
-         do i = 1,nxc
-            ilives_in(i,j,nf)=0
-         enddo
-      enddo
-   enddo
-
-endif
                                                                                                                                         
 !Generate random number, following stochastic physics code:
 if(kstep == initialize_ca) then
@@ -401,18 +391,33 @@ endif !
       enddo
     enddo
 
- deallocate(conditiongrid)
- deallocate(ssti)
- deallocate(lsmski)
- deallocate(lakei)
- deallocate(iini)
- deallocate(ilives_in)
- deallocate(condition)
- deallocate(CA)
- deallocate(ca_plumes)
- deallocate(CA_DEEP)
- deallocate(noise)
- deallocate(noise1D)
+    deallocate(vegtype)
+    deallocate(field_out)
+    deallocate(field_smooth)
+    deallocate(omega)
+    deallocate(pressure)
+    deallocate(humidity)
+    deallocate(uwind)
+    deallocate(vwind)
+    deallocate(vertvelmean)
+    deallocate(vertvelsum)
+    deallocate(dp)
+    deallocate(surfp)
+    deallocate(CA_EMIS_ANTHRO)
+    deallocate(CA_EMIS_DUST)
+    deallocate(CA_EMIS_PLUME)
+    deallocate(CA_EMIS_SEAS)
+    deallocate(vertvelhigh)
+    if(cond_scale==0) then
+      deallocate(cond_save)
+    endif
+    deallocate(iini)
+    deallocate(ilives_in)
+    deallocate(ca_plumes)
+    deallocate(condition)
+    deallocate(conditiongrid)
+    deallocate(noise1D)
+    deallocate(noise)
 
 contains
 
@@ -497,7 +502,7 @@ contains
       real(kind=kind_phys), intent(in) :: ca_in(:,:)
       integer :: blk,ix,i,j,ih,jh,inci,incj
       logical, intent(in) :: save_condition
-      real(kind=kind_phys) :: condmax
+      real(kind=kind_phys) :: condmax, init_weight
       
       init_weight=max(0.0,min(1.0,fhour))
       conditiongrid = 0
@@ -524,7 +529,7 @@ contains
         enddo
       enddo
 
-      call atmosphere_scalar_field_halo(field_out,halo,isize,jsize,k_in,isc,iec,jsc,jec,npx,npy,domain_for_coupler)
+      call atmosphere_scalar_field_halo(field_out,halo,isize,jsize,k_in,isc,iec,jsc,jec,npx,npy,domain)
 
       condmax=0
       do blk = 1,Atm_block%nblks
@@ -568,21 +573,36 @@ contains
         enddo
       endif
       
-      inci=ncells
-      incj=ncells
-      do j=1,nyc
-        do i=1,nxc
-          ilives(i,j,nf)=real(nlives)*conditiongrid(inci/ncells,incj/ncells)
-          if(i.eq.inci)then
-            inci=inci+ncells
-          endif
-        enddo
-        inci=ncells
-        if(j.eq.incj)then
-          incj=incj+ncells
-        endif
-      enddo
+      ! inci=ncells
+      ! incj=ncells
+      ! do j=1,nyc
+      !   do i=1,nxc
+      !     ilives(i,j,nf)=real(nlives)*conditiongrid(inci/ncells,incj/ncells)
+      !     if(i.eq.inci)then
+      !       inci=inci+ncells
+      !     endif
+      !   enddo
+      !   inci=ncells
+      !   if(j.eq.incj)then
+      !     incj=incj+ncells
+      !   endif
+      ! enddo
 
+      if(kstep >=initialize_ca)then
+        do j = 1,nyc
+          do i = 1,nxc
+            ilives_in(i,j,nf)=int(real(nlives)*(condition(i,j)/condmax))
+          enddo
+        enddo
+      else
+        do j = 1,nyc
+          do i = 1,nxc
+            ilives_in(i,j,nf)=0
+          enddo
+        enddo
+      endif
+       
+       
       !Vertical velocity has its own variable in order to condition on combination
       !of "condition" and vertical velocity.
 
@@ -601,8 +621,6 @@ contains
         endif
       enddo
     end subroutine set_condition
-
-  end subroutine cellular_automata_sgs_emis
 
 end subroutine cellular_automata_sgs_emis
 
