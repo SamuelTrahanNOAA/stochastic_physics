@@ -10,16 +10,17 @@ subroutine cellular_automata_sgs_emis(kstep,dtf,restart,first_time_step,domain, 
      ca_condition_diag, ca_plume_diag, ca_sgs_gbbepx_frp, &
      nblks,isc,iec,jsc,jec,npx,npy,nlev,nthresh,rcell, &
      nca,scells,tlives,nfracseed,nseed,ca_global,ca_sgs,iseed_ca, &
-     ca_smooth,nspinup,ca_trigger,blocksize,mpiroot,mpicomm)
+     ca_smooth,nspinup,ca_trigger,cond_scale,emis_weight,blocksize,mpiroot,mpicomm)
 
 use kinddef,           only: kind_phys
+use halo_exchange,     only: atmosphere_scalar_field_halo
 use update_ca,         only: update_cells_sgs, update_cells_global, define_ca_domain
 use mersenne_twister,  only: random_setseed,random_gauss,random_stat,random_number
 use mpp_domains_mod,   only: domain2D
 use block_control_mod, only: block_control_type, define_blocks_packed
 use time_manager_mod, only: time_type
 use mpi_wrapper,       only: mype,mp_reduce_sum,mp_bcst,mp_reduce_max,mp_reduce_min, &
-                             mpi_wrapper_initialize
+                             mpi_wrapper_initialize,mp_reduce_maxloc
 use mpp_domains_mod
 use mpp_mod
 
@@ -39,10 +40,10 @@ implicit none
 !area fraction (nca_plumes=false)
 
 integer,intent(in) :: kstep,scells,nca,tlives,nseed,iseed_ca,nspinup,mpiroot,mpicomm
-real(kind=kind_phys), intent(in)    :: nfracseed,dtf,rcell,fhour
+real(kind=kind_phys), intent(in)    :: nfracseed,dtf,rcell,fhour,emis_weight
 logical,intent(in) :: ca_global, ca_sgs, ca_smooth, restart,ca_trigger,first_time_step
 integer, intent(in) :: nblks,isc,iec,jsc,jec,npx,npy,nlev,blocksize
-real  , intent(out) :: nthresh
+real(kind=kind_phys), intent(out) :: nthresh, cond_scale
 real(kind=kind_phys), intent(in)    :: ugrs(:,:,:)
 real(kind=kind_phys), intent(in)    :: vgrs(:,:,:)
 real(kind=kind_phys), intent(in)    :: qgrs(:,:,:)
@@ -66,13 +67,12 @@ integer :: nlon, nlat, isize,jsize,nf,nn
 integer :: inci, incj, nxc, nyc, nxch, nych, nx, ny
 integer :: nxncells, nyncells
 integer :: halo, k_in, i, j, k, k350, k850, count1
-integer :: seed, ierr7,blk, ix, iix, count4,ih,jh
+integer :: seed, ierr7,blk, ix, iix, ih,jh
 integer :: blocksz,levs
 integer :: isdnx,iednx,jsdnx,jednx
 integer :: iscnx,iecnx,jscnx,jecnx
 integer :: ncells,nlives
-integer, save :: initialize_ca
-integer(8) :: count, count_rate, count_max, count_trunc
+integer, save :: initialize_ca=99999
 integer(8) :: iscale = 10000000000
 real(kind=kind_phys), allocatable :: field_out(:,:,:),field_smooth(:,:)
 real(kind=kind_phys), allocatable :: omega(:,:,:),pressure(:,:,:),humidity(:,:),uwind(:,:),vwind(:,:)
@@ -83,11 +83,11 @@ real(kind=kind_phys), allocatable :: vertvelhigh(:,:),cond_save(:,:)
 integer, allocatable :: iini(:,:,:),ilives_in(:,:,:),ca_plumes(:,:)
 real(kind=kind_phys), allocatable :: CA(:,:),condition(:,:),conditiongrid(:,:)
 real(kind=kind_phys), allocatable :: noise1D(:),noise(:,:,:),vegtype(:,:)
-real(kind=kind_phys) :: condmax,livesmax,factor,dx,pi,re,cond_scale
+real(kind=kind_phys) :: condmax,livesmax,factor,dx,pi,re
 type(domain2D)       :: domain_ncellx
 logical,save         :: block_message=.true.
 logical              :: nca_plumes
-logical,save         :: first_flag
+logical,save         :: first_flag = .false.
 
 !nca         :: switch for number of cellular automata to be used.
 !            :: for the moment only 1 CA can be used if ca_sgs = true
@@ -102,6 +102,7 @@ logical,save         :: first_flag
 
 ! Initialize MPI and OpenMP
 if (first_time_step) then
+  write(0,*) 'initialize mpi'
    call mpi_wrapper_initialize(mpiroot,mpicomm)
 end if
 
@@ -111,8 +112,14 @@ k_in=1
 nca_plumes = .true.
 
 if(first_time_step)then
+  write(0,*) 'first_time_step at kstep ',kstep
    first_flag = .false.
    initialize_ca = 100000
+endif
+
+if(kstep<10 .and. mype==mpiroot) then
+  write(0,*) 'initialize_ca ',initialize_ca
+  write(0,*) 'kstep ',kstep
 endif
 
 !----------------------------------------------------------------------------
@@ -120,10 +127,10 @@ endif
 ! domain
 
 ! Some security checks for namelist combinations:
- if(nca > 1)then
- write(0,*)'When ca_sgs=.True., nca has to be 1 - exiting'
- stop
- endif
+! if(nca > 1)then
+! write(0,*)'When ca_sgs=.True., nca has to be 1 - exiting'
+! stop
+! endif
 
  nlon=iec-isc+1
  nlat=jec-jsc+1
@@ -146,6 +153,8 @@ endif
  write(*,*)'ncells=',ncells
  write(*,*)'nlives=',nlives
  write(*,*)'nthresh=',nthresh
+ write(*,*)'nlon=',nlon
+ write(*,*)'nlat=',nlat
  endif
 
  inci=ncells
@@ -166,10 +175,9 @@ endif
   nxch = iednx-isdnx+1
   nych = jednx-jsdnx+1
 
-
+  cond_scale=0 ! fixme
 
  !Allocate fields:
- allocate(vegtype(nlon,nlat))
  allocate(field_out(isize,jsize,1))
  allocate(field_smooth(nlon,nlat))
  allocate(omega(nlon,nlat,nlev))
@@ -177,8 +185,8 @@ endif
  allocate(humidity(nlon,nlat))
  allocate(uwind(nlon,nlat))
  allocate(vwind(nlon,nlat))
- allocate(vertvelmean(nlon,nlat))
  allocate(vertvelsum(nlon,nlat))
+ allocate(vertvelmean(nlon,nlat))
  allocate(dp(nlon,nlat,nlev))
  allocate(surfp(nlon,nlat))
  allocate(CA_EMIS_ANTHRO(nlon,nlat))
@@ -192,10 +200,12 @@ endif
  allocate(iini(nxc,nyc,nca))
  allocate(ilives_in(nxc,nyc,nca))
  allocate(ca_plumes(nlon,nlat))
+ allocate(CA(nlon,nlat))
  allocate(condition(nxc,nyc))
  allocate(conditiongrid(nlon,nlat))
  allocate(noise1D(nxc*nyc))
  allocate(noise(nxc,nyc,nca))
+ allocate(vegtype(nlon,nlat))
 
  !Initialize:
  humidity(:,:)=0.
@@ -238,7 +248,7 @@ endif
         j = Atm_block%index(blk)%jj(ix) - jsc + 1
         uwind(i,j)         = ugrs(blk,ix,k350)
         vwind(i,j)         = vgrs(blk,ix,k350)
-        conditiongrid(i,j) = max(0.0,vfrac_cpl(blk,ix))
+        conditiongrid(i,j) = max(0.0,vfrac_cpl(blk,ix)/100.0)
         vegtype(i,j)       = vegtype_cpl(blk,ix)
         surfp(i,j)         = pgr(blk,ix)
         humidity(i,j)      = qgrs(blk,ix,k850) !about 850 hpa
@@ -254,10 +264,10 @@ endif
       do ix = 1,Atm_block%blksz(blk)
         i = Atm_block%index(blk)%ii(ix) - isc + 1
         j = Atm_block%index(blk)%jj(ix) - jsc + 1
-        CA_EMIS_ANTHRO(i,j)=ca_emis_anthro_cpl(blk,ix)*vfrac_cpl(blk,ix)
-        CA_EMIS_DUST(i,j)=ca_emis_dust_cpl(blk,ix)*vfrac_cpl(blk,ix)
-        CA_EMIS_PLUME(i,j)=ca_emis_plume_cpl(blk,ix)*vfrac_cpl(blk,ix)
-        CA_EMIS_SEAS(i,j)=ca_emis_seas_cpl(blk,ix)*vfrac_cpl(blk,ix)
+        CA_EMIS_ANTHRO(i,j)=ca_emis_anthro_cpl(blk,ix)*vfrac_cpl(blk,ix)/100.0
+        CA_EMIS_DUST(i,j)=ca_emis_dust_cpl(blk,ix)*vfrac_cpl(blk,ix)/100.0
+        CA_EMIS_PLUME(i,j)=ca_emis_plume_cpl(blk,ix)*vfrac_cpl(blk,ix)/100.0
+        CA_EMIS_SEAS(i,j)=ca_emis_seas_cpl(blk,ix)*vfrac_cpl(blk,ix)/100.0
       enddo
     enddo
 
@@ -281,50 +291,7 @@ endif
       enddo
     enddo
 
-                                                                                                                                        
-!Generate random number, following stochastic physics code:
-if(kstep == initialize_ca) then
-   if (iseed_ca == 0) then
-    ! generate a random seed from system clock and ens member number
-    call system_clock(count, count_rate, count_max)
-    ! iseed is elapsed time since unix epoch began (secs)
-    ! truncate to 4 byte integer
-    count_trunc = iscale*(count/iscale)
-    count4 = count - count_trunc
-  else
-    ! don't rely on compiler to truncate integer(8) to integer(4) on
-    ! overflow, do wrap around explicitly.
-    count4 = mod(mype + iseed_ca + 2147483648, 4294967296) - 2147483648
-  endif
-
-  call random_setseed(count4)
-
-  do nf=1,nca
-    call random_number(noise1D)
-    !Put on 2D:
-    do j=1,nyc
-      do i=1,nxc
-        noise(i,j,nf)=noise1D(i+(j-1)*nxc)
-      enddo
-    enddo
-   enddo
-
-!Initiate the cellular automaton with random numbers larger than nfracseed
-   do nf=1,nca
-    do j = 1,nyc
-      do i = 1,nxc
-        if (noise(i,j,nf) > nfracseed ) then
-          iini(i,j,nf)=1
-        else
-          iini(i,j,nf)=0
-        endif
-      enddo
-    enddo
-  enddo !nf
-
-endif ! 
-
-!Calculate neighbours and update the automata
+    !Calculate neighbours and update the automata
  do nf=1,nca
    if(nf==1)then
      call set_condition(ca_emis_plume_cpl,.true.)
@@ -343,6 +310,7 @@ endif !
 
    livesmax=maxval(ilives_in)
    call mp_reduce_max(livesmax)
+   livesmax=max(real(nlives,kind=kind_phys),livesmax)
    
    if(nf==1)then
      CA_EMIS_PLUME(:,:)=CA(:,:)/livesmax
@@ -381,17 +349,21 @@ endif !
         i = Atm_block%index(blk)%ii(ix) - isc + 1
         j = Atm_block%index(blk)%jj(ix) - jsc + 1
 
-        ca_condition_diag(blk,ix)=conditiongrid(i,j)
+        !ca_condition_diag(blk,ix)=conditiongrid(i,j)
         ca_plume_diag(blk,ix)=ca_plumes(i,j)
 
-        ! ca_emis_anthro_cpl(blk,ix)=CA_EMIS_ANTHRO(i,j)/max(1.0,vfrac_cpl(blk,ix))
-        ! ca_emis_dust_cpl(blk,ix)=CA_EMIS_DUST(i,j)/max(1.0,vfrac_cpl(blk,ix))
-        ! ca_emis_plume_cpl(blk,ix)=CA_EMIS_PLUME(i,j)/max(1.0,vfrac_cpl(blk,ix))
-        ! ca_emis_seas_cpl(blk,ix)=CA_EMIS_SEAS(i,j)/max(1.0,vfrac_cpl(blk,ix))
+        ! ca_emis_anthro_cpl(blk,ix)=CA_EMIS_ANTHRO(i,j)/max(1.0,vfrac_cpl(blk,ix)/100.0)
+        ! ca_emis_dust_cpl(blk,ix)=CA_EMIS_DUST(i,j)/max(1.0,vfrac_cpl(blk,ix)/100.0)
+        ! ca_emis_plume_cpl(blk,ix)=CA_EMIS_PLUME(i,j)/max(1.0,vfrac_cpl(blk,ix)/100.0)
+        ! ca_emis_seas_cpl(blk,ix)=CA_EMIS_SEAS(i,j)/max(1.0,vfrac_cpl(blk,ix)/100.0)
       enddo
     enddo
 
-    deallocate(vegtype)
+    call normalize_output(CA_EMIS_PLUME,ca_emis_plume_cpl,.true.)
+    call normalize_output(CA_EMIS_DUST,ca_emis_dust_cpl,.false.)
+    call normalize_output(CA_EMIS_ANTHRO,ca_emis_anthro_cpl,.false.)
+    call normalize_output(CA_EMIS_SEAS,ca_emis_seas_cpl,.false.)
+
     deallocate(field_out)
     deallocate(field_smooth)
     deallocate(omega)
@@ -399,8 +371,8 @@ endif !
     deallocate(humidity)
     deallocate(uwind)
     deallocate(vwind)
-    deallocate(vertvelmean)
     deallocate(vertvelsum)
+    deallocate(vertvelmean)
     deallocate(dp)
     deallocate(surfp)
     deallocate(CA_EMIS_ANTHRO)
@@ -414,12 +386,62 @@ endif !
     deallocate(iini)
     deallocate(ilives_in)
     deallocate(ca_plumes)
+    deallocate(CA)
     deallocate(condition)
     deallocate(conditiongrid)
     deallocate(noise1D)
     deallocate(noise)
+    deallocate(vegtype)
 
 contains
+
+    subroutine do_initialize_ca
+      implicit none
+      integer(8) :: count, count_rate, count_max, count_trunc
+      integer :: i,j,nf,inci,incj,count4
+      !Generate random number, following stochastic physics code:
+      
+      if(Mype==mpiroot) then
+        write(0,*) 'actually initialize ca'
+      endif
+      if (iseed_ca == 0) then
+        ! generate a random seed from system clock and ens member number
+        call system_clock(count, count_rate, count_max)
+        ! iseed is elapsed time since unix epoch began (secs)
+        ! truncate to 4 byte integer
+        count_trunc = iscale*(count/iscale)
+        count4 = count - count_trunc
+      else
+        ! don't rely on compiler to truncate integer(8) to integer(4) on
+        ! overflow, do wrap around explicitly.
+        count4 = mod(mype + iseed_ca + 2147483648, 4294967296) - 2147483648
+      endif
+
+      call random_setseed(count4)
+
+      do nf=1,nca
+        call random_number(noise1D)
+        !Put on 2D:
+        do j=1,nyc
+          do i=1,nxc
+            noise(i,j,nf)=noise1D(i+(j-1)*nxc)
+          enddo
+        enddo
+      enddo
+
+      !Initiate the cellular automaton with random numbers larger than nfracseed
+      do nf=1,nca
+        do j = 1,nyc
+          do i = 1,nxc
+            if (noise(i,j,nf) > nfracseed ) then
+              iini(i,j,nf)=1
+            else
+              iini(i,j,nf)=0
+            endif
+          enddo
+        enddo
+      enddo !nf
+    end subroutine do_initialize_ca
 
     subroutine normalize_output(ca_in,ca_out,save_condition)
       implicit none
@@ -436,7 +458,7 @@ contains
         do ix = 1,Atm_block%blksz(blk)
           i = Atm_block%index(blk)%ii(ix) - isc + 1
           j = Atm_block%index(blk)%jj(ix) - jsc + 1
-          ca_out(blk,ix)=ca_in(i,j) ! /max(1.0,vfrac_cpl(blk,ix))
+          ca_out(blk,ix)=ca_in(i,j) ! /max(1.0,vfrac_cpl(blk,ix)*100.0)
           minca=min(minca,ca_out(blk,ix))
           maxca=max(maxca,ca_out(blk,ix))
         enddo
@@ -457,6 +479,10 @@ contains
         scale = cond_scale
       endif
 
+      if(mype==mpiroot) then
+        write(0,*) 'copy to ca_out'
+      endif
+
       do blk = 1, Atm_block%nblks
         do ix = 1,Atm_block%blksz(blk)
           if(ca_out(blk,ix)/=0) then
@@ -466,6 +492,9 @@ contains
       enddo
 
       if(save_condition .and. allocated(cond_save)) then
+        if(mype==mpiroot) then
+          write(0,*) 'save_condition'
+        endif
         ! Find conditiongrid/ca_out at maximum conditiongrid value,
         ! before conditiongrid was smoothed.
         condmax = 0
@@ -502,30 +531,22 @@ contains
       real(kind=kind_phys), intent(in) :: ca_in(:,:)
       integer :: blk,ix,i,j,ih,jh,inci,incj
       logical, intent(in) :: save_condition
-      real(kind=kind_phys) :: condmax, init_weight
-      
-      init_weight=max(0.0,min(1.0,fhour))
-      conditiongrid = 0
+      real(kind=kind_phys) :: condmax, weight
+      real(kind=kind_phys) :: savemin, savemax
 
-      ! if(init_weight>0.0) then
-      !   do blk = 1,Atm_block%nblks
-      !     do ix = 1, Atm_block%blksz(blk)
-      !       i = Atm_block%index(blk)%ii(ix) - isc + 1
-      !       j = Atm_block%index(blk)%jj(ix) - jsc + 1
-      !       field_in(i+(j-1)*nlon,1)=ca_sgs_gbbepx_frp(blk,ix)*(1.0-init_weight)
-      !     enddo
-      !   enddo
-      ! else
-      !   field_in=0.0
-      ! endif
+      if(emis_weight<1.0) then
+        weight=max(0.0,min(1.0,1.0-fhour))
+        weight=weight*1.0 + (1.0-weight)*max(0.0,min(1.0,emis_weight))
+      else
+        weight=1.0
+      endif
+      conditiongrid = 0
 
       do blk = 1,Atm_block%nblks
         do ix = 1, Atm_block%blksz(blk)
           i = Atm_block%index(blk)%ii(ix) - isc + 1
           j = Atm_block%index(blk)%jj(ix) - jsc + 1
-          ih=i+halo
-          jh=j+halo
-          field_out(ih,jh,1) = ca_in(blk,ix)
+          field_out(i+halo,j+halo,1)=ca_sgs_gbbepx_frp(blk,ix)*weight+ca_in(blk,ix)*(1.0-weight)*1000.0
         enddo
       enddo
 
@@ -543,7 +564,7 @@ contains
                4.0*field_out(ih,jh+1,1)+2.0*field_out(ih-1,jh-1,1)+&
                2.0*field_out(ih-1,jh+1,1)+2.0*field_out(ih+1,jh+1,1)+&
                2.0*field_out(ih+1,jh-1,1))/32.
-          conditiongrid(i,j) = max(0.0,vfrac_cpl(blk,ix)*(field_smooth(i,j)*init_weight*1000.0 + ca_sgs_gbbepx_frp(blk,ix)*(1.0-init_weight)))
+          conditiongrid(i,j) = max(0.0,vfrac_cpl(blk,ix)*field_smooth(i,j)/100.0)
           condmax = max(condmax,conditiongrid(i,j))
         enddo
       enddo
@@ -555,14 +576,42 @@ contains
       call mp_reduce_max(condmax)
 
       if(condmax>0) then
+        if(.not. first_flag) then
+          ! if(mype==mpiroot) then
+          !   print *,'condmax>0, so time to initialize'
+          ! endif
+          first_flag = .true.
+          initialize_ca = kstep
+        endif
         do j=1,nlat
           do i=1,nlon
             conditiongrid(i,j) = conditiongrid(i,j)/condmax
           enddo
         enddo
+        if(kstep ==initialize_ca)then
+          call do_initialize_ca
+        else
+          inci=ncells
+          incj=ncells
+          do j=1,nyc
+            do i=1,nxc
+              ilives_in(i,j,nf)=real(nlives)*conditiongrid(inci/ncells,incj/ncells)
+              if(i.eq.inci)then
+                inci=inci+ncells
+              endif
+            enddo
+            inci=ncells
+            if(j.eq.incj)then
+              incj=incj+ncells
+            endif
+          enddo
+        endif
+      else if(mype==mpiroot) then
+        write(0,*) 'bad condmax',condmax,'kstep',kstep
       endif
       
       if(save_condition) then
+!        print *,'save condition'
         do blk = 1, Atm_block%nblks
           do ix = 1,Atm_block%blksz(blk)
             i = Atm_block%index(blk)%ii(ix) - isc + 1
@@ -571,6 +620,13 @@ contains
             ca_condition_diag(blk,ix)=conditiongrid(i,j)
           enddo
         enddo
+        savemin = minval(conditiongrid)
+        savemax = maxval(conditiongrid)
+        call mp_reduce_min(savemin)
+        call mp_reduce_max(savemax)
+        if(mype==mpiroot) then
+          write(0,*) 'conditiongrid range ',savemin,savemax
+        endif
       endif
       
       ! inci=ncells
@@ -588,20 +644,7 @@ contains
       !   endif
       ! enddo
 
-      if(kstep >=initialize_ca)then
-        do j = 1,nyc
-          do i = 1,nxc
-            ilives_in(i,j,nf)=int(real(nlives)*(condition(i,j)/condmax))
-          enddo
-        enddo
-      else
-        do j = 1,nyc
-          do i = 1,nxc
-            ilives_in(i,j,nf)=0
-          enddo
-        enddo
-      endif
-       
+ 
        
       !Vertical velocity has its own variable in order to condition on combination
       !of "condition" and vertical velocity.

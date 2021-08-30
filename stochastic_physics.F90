@@ -124,6 +124,15 @@ use_zmtnblck_out=use_zmtnblck
 skeb_npass_out=skeb_npass
 lndp_var_list_out=lndp_var_list
 lndp_prt_list_out=lndp_prt_list
+
+
+if(.not.do_sppt) then
+write(0,*) 'BAD: NO DO SPPT'
+stop 99
+endif
+
+
+
 if ( (.NOT. do_sppt) .AND. (.NOT. do_shum) .AND. (.NOT. do_skeb)  .AND. (lndp_type==0) ) return
 allocate(sl(levs))
 do k=1,levs
