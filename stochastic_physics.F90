@@ -2,7 +2,7 @@
 !! the stochastic physics random pattern generators
 module stochastic_physics
 
-use kinddef, only : kind_phys, kind_dbl_prec
+use kinddef, only : kind_phys, kind_dbl_prec, kind_ocn
 
 implicit none
 
@@ -269,14 +269,15 @@ use mersenne_twister, only: random_gauss
 use mpi_wrapper, only : mpi_wrapper_initialize,mype,npes,is_rootpe
 
 implicit none
-real,intent(in)  :: delt
+real(kind_ocn),intent(in)  :: delt
 integer,intent(in) :: nx,ny,nz
-real,intent(in) :: geoLonT(nx,ny),geoLatT(nx,ny)
+real(kind_ocn),intent(in) :: geoLonT(nx,ny),geoLatT(nx,ny)
 logical,intent(in) :: pert_epbl_in,do_sppt_in
 integer,intent(in)    :: mpiroot, mpicomm
 integer, intent(out) :: iret
 real(kind=kind_phys), parameter     :: con_pi =4.0d0*atan(1.0d0)
 
+real(kind_phys) :: delt_kind_phys
 real :: dx
 integer :: k,latghf,km
 rad2deg=180.0/con_pi
@@ -294,7 +295,8 @@ gis_stochy_ocn%parent_lats=geoLatT
 
 INTTYP=0 ! bilinear interpolation
 km=nz
-call init_stochdata_ocn(km,delt,iret)
+delt_kind_phys = delt
+call init_stochdata_ocn(km,delt_kind_phys,iret)
 if (do_sppt_in.neqv.do_ocnsppt) then
    write(0,'(*(a))') 'Logic error in stochastic_physics_ocn_init: incompatible', &
                    & ' namelist settings do_sppt and sppt'
@@ -475,7 +477,7 @@ use get_stochy_pattern_mod,only : get_random_pattern_scalar
 use stochy_namelist_def
 implicit none
 !type(ocean_grid_type),       intent(in) :: G
-real, intent(inout) :: sppt_wts(:,:),t_rp1(:,:),t_rp2(:,:)
+real(kind_ocn), intent(inout) :: sppt_wts(:,:),t_rp1(:,:),t_rp2(:,:)
 real(kind_dbl_prec), allocatable :: tmp_wts(:,:)
 if (pert_epbl .OR. do_ocnsppt) then
    allocate(tmp_wts(gis_stochy_ocn%nx,gis_stochy_ocn%ny))

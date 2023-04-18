@@ -4,7 +4,7 @@ module kinddef
 
       private
 
-      public :: kind_phys
+      public :: kind_phys, kind_ocn
       public :: kind_dbl_prec, kind_qdt_prec
       public :: kind_io8
 
@@ -23,5 +23,7 @@ module kinddef
 #else
       integer, parameter :: kind_qdt_prec = 16
 #endif
+
+      integer, parameter :: kind_ocn      = kind_dbl_prec
 
 end module kinddef
