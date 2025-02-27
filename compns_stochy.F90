@@ -39,6 +39,7 @@ module compns_stochy_mod
 
 
       use stochy_namelist_def
+      use mpp_mod, only: mpp_pe, mpp_root_pe
 
       implicit none
 
@@ -182,7 +183,7 @@ module compns_stochy_mod
       read(nlunit,nam_sppperts)
 #endif
 
-      if (me == 0) then
+      if (mpp_pe()==mpp_root_pe()) then
       print *,' in compns_stochy'
       print*,'spp_lscale=',spp_lscale
       print*,'spp_tau=',spp_tau
@@ -267,7 +268,7 @@ module compns_stochy_mod
 
 !calculate ntrunc if not supplied
      if (ntrunc .LT. 1) then  
-        if (me==0) print*,'ntrunc not supplied, calculating'
+        if (mpp_pe()==mpp_root_pe()) print*,'ntrunc not supplied, calculating'
         circ=2*3.1415928*rerth ! start with lengthscale that is circumference of the earth
         l_min=circ
         do k=1,5
@@ -279,11 +280,11 @@ module compns_stochy_mod
        if (spp_prt_list(1).GT.0) l_min=min(spp_lscale(1),l_min)
        !ntrunc=1.5*circ/l_min
        ntrunc=circ/l_min
-       if (me==0) print*,'ntrunc calculated from l_min',l_min,ntrunc
+       if (mpp_pe()==mpp_root_pe()) print*,'ntrunc calculated from l_min',l_min,ntrunc
      endif
      ! ensure lat_s is a mutiple of 4 with a reminader of two
      ntrunc=INT((ntrunc+1)/four)*four+2
-     if (me==0) print*,'NOTE ntrunc adjusted for even nlats',ntrunc
+     if (mpp_pe()==mpp_root_pe()) print*,'NOTE ntrunc adjusted for even nlats',ntrunc
 
 ! set up gaussian grid for ntrunc if not already defined. 
      if (lon_s.LT.1 .OR. lat_s.LT.1) then
@@ -292,7 +293,7 @@ module compns_stochy_mod
 ! Grid needs to be larger since interpolation is bi-linear
         lat_s=lat_s*2
         lon_s=lon_s*2
-        if (me==0) print*,'gaussian grid not set, defining here',lon_s,lat_s
+        if (mpp_pe()==mpp_root_pe()) print*,'gaussian grid not set, defining here',lon_s,lat_s
      endif
 
 ! 
@@ -301,7 +302,7 @@ module compns_stochy_mod
 
      select case (lndp_type)
      case (0) 
-        if (me==0) print*, & 
+        if (mpp_pe()==mpp_root_pe()) print*, & 
            'no land perturbations selected'
      case (1,2) 
         ! count requested pert variables
@@ -324,13 +325,13 @@ module compns_stochy_mod
                 
       
         if (lndp_type==1) then  
-          if (me==0) print*, & 
+          if (mpp_pe()==mpp_root_pe()) print*, & 
             'lndp_type=1, land perturbations will be applied to selected paramaters, using older scheme designed for S2S fcst spread with the noah LSM'
            !  sanity-check requested input
            do k =1,n_var_lndp
                select case (lndp_var_list(k))
                case('rz0','rzt','shc','lai','vgf','alb') 
-                   if (me==0) print*, 'land perturbation will be applied to ', lndp_var_list(k)
+                   if (mpp_pe()==mpp_root_pe()) print*, 'land perturbation will be applied to ', lndp_var_list(k)
                case default
                   print*, 'ERROR: land perturbation requested for unknown parameter', lndp_var_list(k)
                   iret = 10 
@@ -338,14 +339,14 @@ module compns_stochy_mod
                end select 
            enddo
         elseif(lndp_type==2) then
-            if (me==0) print*, & 
+            if (mpp_pe()==mpp_root_pe()) print*, & 
             'land perturbations will be applied to selected paramaters, using newer scheme designed for DA ens spread'
                ! check requested parameters have been coded. 
                ! note, Noah-MP specific checks will be done later (since need to know lsm type)
                do k =1,n_var_lndp
                    select case (lndp_var_list(k))
                    case('vgf','smc','stc','alb', 'sal','emi','zol') 
-                       if (me==0) print*, 'land perturbation will be applied to ', lndp_var_list(k)
+                       if (mpp_pe()==mpp_root_pe()) print*, 'land perturbation will be applied to ', lndp_var_list(k)
                    case default
                       print*, 'ERROR: land perturbation requested for new parameter - will need to be coded in lndp_apply_pert', lndp_var_list(k)
                       iret = 10 
@@ -360,7 +361,7 @@ module compns_stochy_mod
         endif
 
      case default 
-        if (me==0) print*, & 
+        if (mpp_pe()==mpp_root_pe()) print*, & 
          'lndp_type out of range, set to 0 (none), 1 (for fcst spread), 2 (for cycling DA spread)'
          iret = 10 
          return 
@@ -388,12 +389,12 @@ module compns_stochy_mod
            iret = 10
            return
      endif
-     if (me==0) print*, &
+     if (mpp_pe()==mpp_root_pe()) print*, &
          'SPP physics perturbations will be applied to selected parameters', n_var_spp
         do k =1,n_var_spp
             select case (spp_var_list(k))
             case('pbl','sfc', 'mp','rad','gwd','cu_deep')
-                if (me==0) print*, 'SPP physics perturbation will be applied to ', spp_var_list(k)
+                if (mpp_pe()==mpp_root_pe()) print*, 'SPP physics perturbation will be applied to ', spp_var_list(k)
             case default
                print*, 'ERROR: SPP physics perturbation requested for new parameter - will need to be coded in spp_apply_pert', spp_var_list(k)
                iret = 10
@@ -403,7 +404,7 @@ module compns_stochy_mod
 !
 !  All checks are successful.
 !
-      if (me == 0) then
+      if (mpp_pe()==mpp_root_pe()) then
          print *, 'stochastic physics'
          print *, ' do_sppt : ', do_sppt
          print *, ' do_shum : ', do_shum
