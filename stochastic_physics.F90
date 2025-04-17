@@ -9,11 +9,25 @@ implicit none
 
 private
 
-public :: init_stochastic_physics,init_stochastic_physics_ocn
+public :: init_stochastic_physics,init_stochastic_physics_ocn,init_stochastic_physics_stub
 public :: run_stochastic_physics,run_stochastic_physics_ocn
 public :: finalize_stochastic_physics
 
 contains
+
+!>@brief The subroutine 'init_stochastic_physics_stub' initializes the MPI wrapper, and nothing else.
+!>@details This is needed to prevent hangs when using CA without other stochastic physics.
+subroutine init_stochastic_physics_stub(mpiroot, mpicomm, iret) 
+use mpi_wrapper, only : mpi_wrapper_initialize
+implicit none
+integer,                  intent(in)    :: mpiroot
+type(MPI_Comm),           intent(in)    :: mpicomm
+integer,                  intent(out)   :: iret
+
+! Initialize MPI and OpenMP
+call mpi_wrapper_initialize(mpiroot,mpicomm)
+iret=0
+end subroutine init_stochastic_physics_stub
 
 !>@brief The subroutine 'init_stochastic_physics' initializes the stochastic
 !!pattern genertors
