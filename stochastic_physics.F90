@@ -351,14 +351,14 @@ end subroutine init_stochastic_physics_ocn
 !>@details It updates the AR(1) in spectral space
 !allocates and polulates the necessary arrays
 
-subroutine run_stochastic_physics(levs, kdt, fhour, blksz, sppt_wts, shum_wts, skebu_wts,  & 
+subroutine run_stochastic_physics(levs, kdt, fhour, blksz, xlon, xlat, sppt_wts, shum_wts, skebu_wts,  & 
                                   skebv_wts, sfc_wts, spp_wts, nthreads)
 
 !\callgraph
 !use stochy_internal_state_mod
 use stochy_data_mod, only : nshum,rpattern_shum,rpattern_sppt,nsppt,rpattern_skeb,nskeb,&
                             gis_stochy,vfact_sppt,vfact_shum,vfact_skeb, rpattern_sfc, nlndp, &
-                            rpattern_spp, nspp, vfact_spp
+                            rpattern_spp, nspp, vfact_spp, rad2deg
 use get_stochy_pattern_mod,only : get_random_pattern_scalar,get_random_pattern_vector, & 
                                   get_random_pattern_sfc,get_random_pattern_spp
 use stochy_namelist_def, only : do_shum,do_sppt,do_skeb,nssppt,nsshum,nsskeb,nsspp,nslndp,sppt_logit,    & 
@@ -377,6 +377,9 @@ real(kind=kind_phys), intent(inout) :: skebv_wts(:,:,:)
 real(kind=kind_phys), intent(inout) :: sfc_wts(:,:,:)
 real(kind=kind_phys), intent(inout) :: spp_wts(:,:,:,:)
 integer,                  intent(in)    :: nthreads
+real(kind=kind_phys), intent(in)    :: xlon(:,:)
+real(kind=kind_phys), intent(in)    :: xlat(:,:)
+real(kind=kind_phys), parameter     :: con_pi =4.0d0*atan(1.0d0)
 
 real(kind_dbl_prec),allocatable :: tmp_wts(:,:),tmpu_wts(:,:,:),tmpv_wts(:,:,:),tmpl_wts(:,:,:),tmp_spp_wts(:,:,:)
 !D-grid
@@ -390,9 +393,21 @@ logical :: do_advance_pattern
 if ( (.NOT. do_sppt) .AND. (.NOT. do_shum) .AND. (.NOT. do_skeb) .AND. (lndp_type==0 ) .AND. (n_var_spp .le. 0)) return
 
 ! Update number of threads in shared variables in spectral_layout_mod and set block-related variables
+rad2deg=180.0/con_pi
+
 nblks = size(blksz)
 maxlen = maxval(blksz(:))
 
+!nblks = size(blksz)
+!allocate(gis_stochy%len(nblks))
+!allocate(gis_stochy%parent_lons(gis_stochy%nx,gis_stochy%ny))
+!allocate(gis_stochy%parent_lats(gis_stochy%nx,gis_stochy%ny))
+do blk=1,nblks
+   len=blksz(blk)
+   gis_stochy%parent_lons(1:len,blk)=xlon(blk,1:len)*rad2deg
+   gis_stochy%parent_lats(1:len,blk)=xlat(blk,1:len)*rad2deg
+   gis_stochy%len(blk)=len
+enddo
 
 if ( (lndp_type==1) .and. (kdt==0) ) then ! old land pert scheme called once at start
         write(0,*) 'calling get_random_pattern_sfc'  
