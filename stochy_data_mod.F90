@@ -166,7 +166,7 @@ module stochy_data_mod
             end if
          endif
       endif
-     print*,'calling init',lonf,latg,jcap
+      print*,'calling init',lonf,latg,jcap
       call patterngenerator_init(sppt_lscale(1:nsppt),spptint,sppt_tau(1:nsppt),sppt(1:nsppt),iseed_sppt,rpattern_sppt, &
            lonf,latg,jcap,gis_stochy%ls_node,nsppt,1,0,new_lscale)
       do n=1,nsppt
